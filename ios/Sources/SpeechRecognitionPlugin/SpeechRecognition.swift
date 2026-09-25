@@ -12,9 +12,7 @@ public class SpeechRecognition: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "start", returnType: .promise),
         CAPPluginMethod(name: "stop", returnType: .promise),
         CAPPluginMethod(name: "getSupportedLanguages", returnType: .promise),
-        CAPPluginMethod(name: "hasPermission", returnType: .promise),
         CAPPluginMethod(name: "isListening", returnType: .promise),
-        CAPPluginMethod(name: "requestPermission", returnType: .promise),
         CAPPluginMethod(name: "checkPermissions", returnType: .promise),
         CAPPluginMethod(name: "requestPermissions", returnType: .promise),
         CAPPluginMethod(name: "removeAllListeners", returnType: .promise)

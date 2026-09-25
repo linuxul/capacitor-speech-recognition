@@ -90,10 +90,6 @@ SpeechRecognition.getSupportedLanguages();
 SpeechRecognition.checkPermissions();
 
 SpeechRecognition.requestPermissions();
-
-SpeechRecognition.hasPermission();
-
-SpeechRecognition.requestPermission();
 ```
 
 <docgen-api>

@@ -14,7 +14,9 @@ import com.getcapacitor.Logger
 import com.getcapacitor.PermissionState
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
+import com.getcapacitor.PluginException
 import com.getcapacitor.PluginMethod
+import com.getcapacitor.PluginThread
 import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
@@ -52,16 +54,15 @@ public class SpeechRecognition : Plugin() {
         call.resolve(result)
     }
 
-    @PluginMethod
+    // start and stop run on the main thread, where the recognizer lives, in the order of the calls
+    @PluginMethod(thread = PluginThread.MAIN)
     public fun start(call: PluginCall) {
         if (!isSpeechRecognitionAvailable) {
-            call.unavailable(Constants.NOT_AVAILABLE)
-            return
+            throw PluginException(Constants.NOT_AVAILABLE, "UNAVAILABLE")
         }
 
         if (getPermissionState(SPEECH_RECOGNITION) != PermissionState.GRANTED) {
-            call.reject(Constants.MISSING_PERMISSION)
-            return
+            throw PluginException(Constants.MISSING_PERMISSION)
         }
 
         val language = call.getString("language", Locale.getDefault().toString())
@@ -72,10 +73,11 @@ public class SpeechRecognition : Plugin() {
         beginListening(language, maxResults, prompt, partialResults, popup, call)
     }
 
-    @PluginMethod
+    @PluginMethod(thread = PluginThread.MAIN)
     public fun stop(call: PluginCall) {
         try {
-            stopListening()
+            stopRecognizer()
+            call.resolve()
         } catch (ex: Exception) {
             call.reject(ex.localizedMessage)
         }
@@ -156,48 +158,49 @@ public class SpeechRecognition : Plugin() {
         if (showPopup) {
             startActivityForResult(call, intent, "listeningResult")
         } else {
-            bridge.webView.post {
-                try {
-                    lock.lock()
+            try {
+                lock.lock()
 
-                    speechRecognizer?.let {
-                        it.cancel()
-                        it.destroy()
-                        speechRecognizer = null
-                    }
-
-                    val recognizer = SpeechRecognizer.createSpeechRecognizer(bridge.activity)
-                    speechRecognizer = recognizer
-                    val listener = SpeechRecognitionListener()
-                    listener.call = call
-                    listener.partialResults = partialResults
-                    recognizer.setRecognitionListener(listener)
-                    recognizer.startListening(intent)
-                    listening = true
-                    if (partialResults) {
-                        call.resolve()
-                    }
-                } catch (ex: Exception) {
-                    call.reject(ex.message)
-                } finally {
-                    lock.unlock()
+                speechRecognizer?.let {
+                    it.cancel()
+                    it.destroy()
+                    speechRecognizer = null
                 }
+
+                val recognizer = SpeechRecognizer.createSpeechRecognizer(bridge.activity)
+                speechRecognizer = recognizer
+                val listener = SpeechRecognitionListener()
+                listener.call = call
+                listener.partialResults = partialResults
+                recognizer.setRecognitionListener(listener)
+                recognizer.startListening(intent)
+                listening = true
+                if (partialResults) {
+                    call.resolve()
+                }
+            } catch (ex: Exception) {
+                call.reject(ex.message)
+            } finally {
+                lock.unlock()
             }
         }
     }
 
     private fun stopListening() {
-        bridge.webView.post {
-            try {
-                lock.lock()
-                if (listening) {
-                    // Java dereferenced the recognizer without a check here as well
-                    speechRecognizer!!.stopListening()
-                    listening = false
-                }
-            } finally {
-                lock.unlock()
+        bridge.webView.post { stopRecognizer() }
+    }
+
+    /** Stops listening; call it on the main thread. */
+    private fun stopRecognizer() {
+        try {
+            lock.lock()
+            if (listening) {
+                // Java dereferenced the recognizer without a check here as well
+                speechRecognizer!!.stopListening()
+                listening = false
             }
+        } finally {
+            lock.unlock()
         }
     }
 

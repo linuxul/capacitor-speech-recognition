@@ -7,15 +7,16 @@ import Speech
 public class SpeechRecognition: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "SpeechRecognition"
     public let jsName = "SpeechRecognition"
+    // start and stop stay synchronous, so they run in the order of the calls. removeAllListeners is not listed: the
+    // bridge answers it for every plugin.
     public let pluginMethods: [CAPPluginMethod] = [
-        CAPPluginMethod(name: "available", returnType: .promise),
-        CAPPluginMethod(name: "start", returnType: .promise),
-        CAPPluginMethod(name: "stop", returnType: .promise),
-        CAPPluginMethod(name: "getSupportedLanguages", returnType: .promise),
-        CAPPluginMethod(name: "isListening", returnType: .promise),
-        CAPPluginMethod(name: "checkPermissions", returnType: .promise),
-        CAPPluginMethod(name: "requestPermissions", returnType: .promise),
-        CAPPluginMethod(name: "removeAllListeners", returnType: .promise)
+        .promise("available", SpeechRecognition.available),
+        .promise("start", SpeechRecognition.start),
+        .promise("stop", SpeechRecognition.stop),
+        .promise("getSupportedLanguages", SpeechRecognition.getSupportedLanguages),
+        .promise("isListening", SpeechRecognition.isListening),
+        .promise("checkPermissions", SpeechRecognition.checkPermissions),
+        .async("requestPermissions", SpeechRecognition.requestSpeechPermissions)
     ]
 
     let defaultMatches = 5
@@ -32,7 +33,7 @@ public class SpeechRecognition: CAPPlugin, CAPBridgedPlugin {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
 
-    @objc func available(_ call: CAPPluginCall) {
+    func available(_ call: CAPPluginCall) {
         guard let recognizer = SFSpeechRecognizer() else {
             call.resolve([
                 "available": false
@@ -44,18 +45,16 @@ public class SpeechRecognition: CAPPlugin, CAPBridgedPlugin {
         ])
     }
 
-    @objc func start(_ call: CAPPluginCall) {
+    func start(_ call: CAPPluginCall) throws {
         if self.audioEngine != nil {
             if self.audioEngine!.isRunning {
-                call.reject(self.messageOngoing)
-                return
+                throw CAPPluginError(self.messageOngoing)
             }
         }
 
         let status: SFSpeechRecognizerAuthorizationStatus = SFSpeechRecognizer.authorizationStatus()
         if status != SFSpeechRecognizerAuthorizationStatus.authorized {
-            call.reject(self.messageMissingPermission)
-            return
+            throw CAPPluginError(self.messageMissingPermission)
         }
 
         AVAudioSession.sharedInstance().requestRecordPermission { (granted) in
@@ -152,7 +151,7 @@ public class SpeechRecognition: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    @objc func stop(_ call: CAPPluginCall) {
+    func stop(_ call: CAPPluginCall) {
         DispatchQueue.global(qos: DispatchQoS.QoSClass.default).async {
             if let engine = self.audioEngine, engine.isRunning {
                 engine.stop()
@@ -163,14 +162,14 @@ public class SpeechRecognition: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    @objc func isListening(_ call: CAPPluginCall) {
+    func isListening(_ call: CAPPluginCall) {
         let isListening = self.audioEngine?.isRunning ?? false
         call.resolve([
             "listening": isListening
         ])
     }
 
-    @objc func getSupportedLanguages(_ call: CAPPluginCall) {
+    func getSupportedLanguages(_ call: CAPPluginCall) {
         let supportedLanguages: Set<Locale>! = SFSpeechRecognizer.supportedLocales() as Set<Locale>
         let languagesArr: NSMutableArray = NSMutableArray()
 
@@ -183,7 +182,28 @@ public class SpeechRecognition: CAPPlugin, CAPBridgedPlugin {
         ])
     }
 
-    @objc override public func checkPermissions(_ call: CAPPluginCall) {
+    override public func checkPermissions(_ call: CAPPluginCall) {
+        call.resolve(speechRecognitionPermission())
+    }
+
+    /// Registered as requestPermissions: an async method cannot override the synchronous one of CAPPlugin. It touches
+    /// no UIKit state, so it does not need the main actor: the system presents the permission prompts.
+    func requestSpeechPermissions(_ call: CAPPluginCall) async -> JSObject {
+        // The handler is called once.
+        let status = await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.resume(returning: status)
+            }
+        }
+        guard status == .authorized else {
+            return speechRecognitionPermission()
+        }
+        // The replacement of AVAudioSession.requestRecordPermission, which iOS 17 deprecated.
+        let granted = await AVAudioApplication.requestRecordPermission()
+        return ["speechRecognition": granted ? "granted" : "denied"]
+    }
+
+    private func speechRecognitionPermission() -> JSObject {
         let status: SFSpeechRecognizerAuthorizationStatus = SFSpeechRecognizer.authorizationStatus()
         let permission: String
         switch status {
@@ -196,29 +216,6 @@ public class SpeechRecognition: CAPPlugin, CAPBridgedPlugin {
         @unknown default:
             permission = "prompt"
         }
-        call.resolve(["speechRecognition": permission])
-    }
-
-    @objc override public func requestPermissions(_ call: CAPPluginCall) {
-        SFSpeechRecognizer.requestAuthorization { (status: SFSpeechRecognizerAuthorizationStatus) in
-            DispatchQueue.main.async {
-                switch status {
-                case .authorized:
-                    AVAudioSession.sharedInstance().requestRecordPermission { (granted: Bool) in
-                        if granted {
-                            call.resolve(["speechRecognition": "granted"])
-                        } else {
-                            call.resolve(["speechRecognition": "denied"])
-                        }
-                    }
-                    break
-                case .denied, .restricted, .notDetermined:
-                    self.checkPermissions(call)
-                    break
-                @unknown default:
-                    self.checkPermissions(call)
-                }
-            }
-        }
+        return ["speechRecognition": permission]
     }
 }
